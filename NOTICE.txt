@@ -1,0 +1,5 @@
+wmibeat-ohm2
+Copyright {year} Attila Csaba Marosi
+
+This product includes software developed by The Apache Software
+Foundation (http://www.apache.org/).

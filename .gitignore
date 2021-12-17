@@ -1,0 +1,9 @@
+/.idea
+/build
+
+.DS_Store
+/wmibeat-ohm2
+/wmibeat-ohm2.test
+*.pyc
+
+*.exe
