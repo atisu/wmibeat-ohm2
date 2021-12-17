@@ -5,6 +5,10 @@ Welcome to {Beat}.
 Ensure that this folder is at the following location:
 `${GOPATH}/src/github.com/atisu/wmibeat-ohm2`
 
+## Links
+
+- https://georgebridgeman.com/posts/creating-a-custom-beat/
+
 ## Getting Started with {Beat}
 
 ### Requirements
