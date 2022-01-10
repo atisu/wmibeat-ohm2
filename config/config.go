@@ -6,13 +6,13 @@ package config
 import "time"
 
 type Config struct {
-	Wmibeat WmibeatConfig
+	Wmibeat WmibeatConfig `config:"wmibeat-ohm2"`
 }
 
 type WmibeatConfig struct {
 	Period     time.Duration `yaml:"period"`
 	Classes    []ClassConfig
-	Namespaces []NamespaceConfig
+	Namespaces []NamespaceConfig `config:"namespaces"`
 }
 
 type ClassConfig struct {
@@ -30,10 +30,8 @@ type NamespaceConfig struct {
 	WhereClause              string   `config:"whereclause"`
 }
 
-var DefaultConfig = Config{
-	WmibeatConfig{
-		Period:     1 * time.Second,
-		Classes:    nil,
-		Namespaces: nil,
-	},
+var DefaultConfig = WmibeatConfig{
+	Period:     1 * time.Second,
+	Classes:    nil,
+	Namespaces: nil,
 }

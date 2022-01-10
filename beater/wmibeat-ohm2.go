@@ -19,28 +19,35 @@ import (
 
 // wmibeat-ohm2 configuration.
 type wmibeatohm2 struct {
+	beat   *beat.Beat
 	done   chan struct{}
-	config config.Config
+	config config.WmibeatConfig
 	client beat.Client
+	log    *logp.Logger
 }
 
 // New creates an instance of wmibeat-ohm2.
 func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
 	c := config.DefaultConfig
-	if err := cfg.Unpack(&c); err != nil {
-		return nil, fmt.Errorf("Error reading config file: %v", err)
+	if err := b.BeatConfig.Unpack(&c); err != nil {
+		return nil, fmt.Errorf("ERROR READING CONFIG FILE: %v", err)
 	}
 
+	log := logp.NewLogger("wmibeatohm2")
+
 	bt := &wmibeatohm2{
+		beat:   b,
 		done:   make(chan struct{}),
 		config: c,
+		log:    log,
 	}
+
 	return bt, nil
 }
 
 // Run starts wmibeat-ohm2.
 func (bt *wmibeatohm2) Run(b *beat.Beat) error {
-	logp.Info("wmibeat-ohm2 is running! Hit CTRL-C to stop it.")
+	bt.log.Info("wmibeat-ohm2 is running! Hit CTRL-C to stop it.")
 
 	var err error
 	bt.client, err = b.Publisher.Connect()
@@ -48,8 +55,8 @@ func (bt *wmibeatohm2) Run(b *beat.Beat) error {
 		return err
 	}
 
-	ticker := time.NewTicker(bt.config.Wmibeat.Period)
-	counter := 1
+	ticker := time.NewTicker(bt.config.Period)
+	//counter := 1
 	for {
 		select {
 		case <-bt.done:
@@ -77,7 +84,7 @@ func (bt *wmibeatohm2) Run(b *beat.Beat) error {
 		defer serviceObj.Clear()
 
 		var allValues common.MapStr
-		for _, class := range bt.config.Wmibeat.Classes {
+		for _, class := range bt.config.Classes {
 			if len(class.Fields) > 0 {
 				var query bytes.Buffer
 				wmiFields := class.Fields
@@ -89,17 +96,17 @@ func (bt *wmibeatohm2) Run(b *beat.Beat) error {
 					query.WriteString(" WHERE ")
 					query.WriteString(class.WhereClause)
 				}
-				logp.Info("query: " + query.String())
+				bt.log.Info("query: " + query.String())
 				resultObj, err := oleutil.CallMethod(service, "ExecQuery", query.String())
 				if err != nil {
-					logp.Err("cannot query class `" + class.Class + "`")
+					bt.log.Error("cannot query class `" + class.Class + "`")
 					continue
 				}
 				result := resultObj.ToIDispatch()
 				defer resultObj.Clear()
 				countObj, err := oleutil.GetProperty(result, "Count")
 				if err != nil {
-					logp.Err("cannot query count property for class `" + class.Class + "`")
+					bt.log.Error("cannot query count property for class `" + class.Class + "`")
 					continue
 				}
 				count := int(countObj.Val)
@@ -115,7 +122,7 @@ func (bt *wmibeatohm2) Run(b *beat.Beat) error {
 				for i := 0; i < count; i++ {
 					rowObj, err := oleutil.CallMethod(result, "ItemIndex", i)
 					if err != nil {
-						logp.Err("cannot call ItemIndex for class `" + class.Class + "`")
+						bt.log.Error("cannot call ItemIndex for class `" + class.Class + "`")
 						continue
 					}
 					row := rowObj.ToIDispatch()
@@ -127,7 +134,7 @@ func (bt *wmibeatohm2) Run(b *beat.Beat) error {
 						wmiObj, err := oleutil.GetProperty(row, j)
 
 						if err != nil {
-							logp.Err("cannot get property for class `" + class.Class + "`")
+							bt.log.Error("cannot get property for class `" + class.Class + "`")
 							hasError = 1
 							break
 						}
@@ -160,16 +167,16 @@ func (bt *wmibeatohm2) Run(b *beat.Beat) error {
 				errorString.WriteString("No fields defined for class ")
 				errorString.WriteString(class.Class)
 				errorString.WriteString(".  Skipping")
-				logp.Warn(errorString.String())
+				bt.log.Warn(errorString.String())
 			}
 		}
 
-		for _, namespace := range bt.config.Wmibeat.Namespaces {
-			logp.Info("Namespace: root\\" + namespace.Namespace)
+		for _, namespace := range bt.config.Namespaces {
+			//bt.log.Info("Namespace: root\\" + namespace.Namespace)
 			nsServiceObj, err := oleutil.CallMethod(wmiqi, "ConnectServer", "localhost",
 				"root\\"+namespace.Namespace)
 			if err != nil {
-				logp.Err("cannot connect to namespace `" + namespace.Namespace + "`, skipping it.")
+				bt.log.Error("cannot connect to namespace `" + namespace.Namespace + "`, skipping it.")
 				continue
 			}
 			nsService := nsServiceObj.ToIDispatch()
@@ -186,27 +193,27 @@ func (bt *wmibeatohm2) Run(b *beat.Beat) error {
 				query.WriteString(" WHERE ")
 				query.WriteString(namespace.WhereClause)
 			}
-			logp.Info("Query: " + query.String())
+			//logp.Info("Query: " + query.String())
 			resultObj, err := oleutil.CallMethod(nsService, "ExecQuery", query.String())
 			if err != nil {
-				logp.Err("cannot exec query in current namespace, skipping it.")
+				bt.log.Error("cannot exec query in current namespace, skipping it: " + query.String())
 				continue
 			}
 			result := resultObj.ToIDispatch()
 			defer resultObj.Clear()
 			countObj, err := oleutil.GetProperty(result, "Count")
 			if err != nil {
-				logp.Err("cannot get `Count` property, skipping current namespace.")
+				bt.log.Error("cannot get `Count` property, skipping current namespace.")
 				continue
 			}
 			count := int(countObj.Val)
 			defer countObj.Clear()
-			logp.Info("count: " + strconv.Itoa(count))
+			//logp.Info("count: " + strconv.Itoa(count))
 
 			for i := 0; i < count; i++ {
 				rowObj, err := oleutil.CallMethod(result, "ItemIndex", i)
 				if err != nil {
-					logp.Err("cannot fetch ItemIndex, skipping it.")
+					bt.log.Error("cannot fetch ItemIndex, skipping it.")
 					continue
 				}
 				row := rowObj.ToIDispatch()
@@ -218,7 +225,7 @@ func (bt *wmibeatohm2) Run(b *beat.Beat) error {
 				for _, j := range allWMIFields {
 					wmiObj, err := oleutil.GetProperty(row, j)
 					if err != nil {
-						logp.Err("cannot get `Count` property for row, skipping it.")
+						bt.log.Error("cannot get `Count` property for row, skipping it.")
 						hasError = 1
 						break
 					}
@@ -232,7 +239,7 @@ func (bt *wmibeatohm2) Run(b *beat.Beat) error {
 				}
 				if hasError == 0 {
 					objectTitle = strings.ReplaceAll(strings.ReplaceAll(objectTitle, " ", ""), "#", "")
-					logp.Info(objectTitle + " = " + metricValue)
+					//logp.Info(objectTitle + " = " + metricValue)
 					allValues = common.MapStrUnion(allValues, common.MapStr{objectTitle: metricValue})
 				}
 			}
@@ -243,14 +250,14 @@ func (bt *wmibeatohm2) Run(b *beat.Beat) error {
 		event := beat.Event{
 			Timestamp: time.Now(),
 			Fields: common.MapStr{
-				"type":    b.Info.Name,
-				"counter": counter,
-				"wmi":     allValues,
+				"type": b.Info.Name,
+				//"counter": counter,
+				"wmi": allValues,
 			},
 		}
 		bt.client.Publish(event)
-		logp.Info("Event sent")
-		counter++
+		//bt.log.Info("Event sent")
+		//counter++
 	}
 }
 
