@@ -22,6 +22,7 @@ So I needed a method for reporting the collected metrics to *elasticsearch*. Fir
 
 There is a [blog post](https://www.elastic.co/blog/build-your-own-beat) from elastic for building custom Beats, but is severely outdated (useless) and the [developer guide](https://www.elastic.co/guide/en/beats/devguide/current/index.html) is not very helpful. I found a bit more recent [blog post](https://georgebridgeman.com/posts/creating-a-custom-beat/) that is a good starting point, but I encountered some issues along the way. I will document here the steps I needed to create my custom Beat.
 
+
 ## Creating the Beat
 
 For the record I am using Ubuntu Linux 20.04. The steps are as follows:
@@ -101,6 +102,9 @@ For the record I am using Ubuntu Linux 20.04. The steps are as follows:
 	GOOS=windows GOARCH=386 go build -o wmibeat.exe main.go
 	```
 
+
+[^1]: There are even community beats worth checking before writing your own: https://www.elastic.co/guide/en/beats/libbeat/current/community-beats.html
+[^2]: WMI is the Microsoft implementation of "an industry standard (Web-Based Enterprise Management - WBEM) for accessing management information in a standardized way". See: https://docs.microsoft.com/en-us/windows/win32/wmisdk/about-wmi
 
 
 
