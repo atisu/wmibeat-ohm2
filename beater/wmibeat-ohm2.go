@@ -56,7 +56,6 @@ func (bt *wmibeatohm2) Run(b *beat.Beat) error {
 	}
 
 	ticker := time.NewTicker(bt.config.Period)
-	//counter := 1
 	for {
 		select {
 		case <-bt.done:
@@ -64,200 +63,212 @@ func (bt *wmibeatohm2) Run(b *beat.Beat) error {
 		case <-ticker.C:
 		}
 
-		ole.CoInitialize(0)
+		err = func() error {
+			ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
 
-		wmiscriptObj, err := oleutil.CreateObject("WbemScripting.SWbemLocator")
-		if err != nil {
-			return err
-		}
-		wmiqi, err := wmiscriptObj.QueryInterface(ole.IID_IDispatch)
-		if err != nil {
-			return err
-		}
-		defer wmiscriptObj.Release()
-		serviceObj, err := oleutil.CallMethod(wmiqi, "ConnectServer")
-		if err != nil {
-			return err
-		}
-		defer wmiqi.Release()
-		service := serviceObj.ToIDispatch()
-		defer serviceObj.Clear()
+			wmiscriptObj, err := oleutil.CreateObject("WbemScripting.SWbemLocator")
+			defer wmiscriptObj.Release()
+			if err != nil {
+				bt.log.Error("ERROR: oleutil.CreateObject(WbemScripting.SWbemLocator)")
+				return err
+			}
+			wmiqi, err := wmiscriptObj.QueryInterface(ole.IID_IDispatch)
+			defer wmiqi.Release()
+			if err != nil {
+				bt.log.Error("ERROR: QueryInterface(ole.IID_IDispatch)")
+				return err
+			}
+			serviceObj, err := oleutil.CallMethod(wmiqi, "ConnectServer")
+			defer serviceObj.Clear()
+			if err != nil {
+				bt.log.Error("ERROR: default ConnectServer()")
+				return err
+			}
+			service := serviceObj.ToIDispatch()
+			//defer service.Release()
 
-		var allValues common.MapStr
-		for _, class := range bt.config.Classes {
-			if len(class.Fields) > 0 {
-				var query bytes.Buffer
-				wmiFields := class.Fields
-				query.WriteString("SELECT ")
-				query.WriteString(strings.Join(wmiFields, ","))
-				query.WriteString(" FROM ")
-				query.WriteString(class.Class)
-				if class.WhereClause != "" {
-					query.WriteString(" WHERE ")
-					query.WriteString(class.WhereClause)
-				}
-				bt.log.Info("query: " + query.String())
-				resultObj, err := oleutil.CallMethod(service, "ExecQuery", query.String())
-				if err != nil {
-					bt.log.Error("cannot query class `" + class.Class + "`")
-					continue
-				}
-				result := resultObj.ToIDispatch()
-				defer resultObj.Clear()
-				countObj, err := oleutil.GetProperty(result, "Count")
-				if err != nil {
-					bt.log.Error("cannot query count property for class `" + class.Class + "`")
-					continue
-				}
-				count := int(countObj.Val)
-				defer countObj.Clear()
-
-				var classValues interface{} = nil
-
-				if class.ObjectTitle != "" {
-					classValues = common.MapStr{}
-				} else {
-					classValues = []common.MapStr{}
-				}
-				for i := 0; i < count; i++ {
-					rowObj, err := oleutil.CallMethod(result, "ItemIndex", i)
+			var allValues common.MapStr
+			for _, class := range bt.config.Classes {
+				if len(class.Fields) > 0 {
+					var query bytes.Buffer
+					wmiFields := class.Fields
+					query.WriteString("SELECT ")
+					query.WriteString(strings.Join(wmiFields, ","))
+					query.WriteString(" FROM ")
+					query.WriteString(class.Class)
+					if class.WhereClause != "" {
+						query.WriteString(" WHERE ")
+						query.WriteString(class.WhereClause)
+					}
+					bt.log.Info("query: " + query.String())
+					resultObj, err := oleutil.CallMethod(service, "ExecQuery", query.String())
+					defer resultObj.Clear()
 					if err != nil {
-						bt.log.Error("cannot call ItemIndex for class `" + class.Class + "`")
+						bt.log.Error("cannot query class `" + class.Class + "`")
 						continue
 					}
-					row := rowObj.ToIDispatch()
-					defer rowObj.Clear()
-					var rowValues common.MapStr
-					var objectTitle = ""
-					var hasError int = 0
-					for _, j := range wmiFields {
-						wmiObj, err := oleutil.GetProperty(row, j)
-
-						if err != nil {
-							bt.log.Error("cannot get property for class `" + class.Class + "`")
-							hasError = 1
-							break
-						}
-						var objValue = wmiObj.Value()
-						if class.ObjectTitle == j {
-							objectTitle = objValue.(string)
-						}
-						rowValues = common.MapStrUnion(rowValues, common.MapStr{j: objValue})
-						defer wmiObj.Clear()
-
-					}
-					if hasError == 0 {
-						if class.ObjectTitle != "" {
-							if objectTitle != "" {
-								classValues = common.MapStrUnion(classValues.(common.MapStr), common.MapStr{objectTitle: rowValues})
-							} else {
-								classValues = common.MapStrUnion(classValues.(common.MapStr), common.MapStr{strconv.Itoa(i): rowValues})
-							}
-						} else {
-							classValues = append(classValues.([]common.MapStr), rowValues)
-						}
-					}
-					rowValues = nil
-				}
-				allValues = common.MapStrUnion(allValues, common.MapStr{class.Class: classValues})
-				classValues = nil
-
-			} else {
-				var errorString bytes.Buffer
-				errorString.WriteString("No fields defined for class ")
-				errorString.WriteString(class.Class)
-				errorString.WriteString(".  Skipping")
-				bt.log.Warn(errorString.String())
-			}
-		}
-
-		for _, namespace := range bt.config.Namespaces {
-			//bt.log.Info("Namespace: root\\" + namespace.Namespace)
-			nsServiceObj, err := oleutil.CallMethod(wmiqi, "ConnectServer", "localhost",
-				"root\\"+namespace.Namespace)
-			if err != nil {
-				bt.log.Error("cannot connect to namespace `" + namespace.Namespace + "`, skipping it.")
-				continue
-			}
-			nsService := nsServiceObj.ToIDispatch()
-			defer serviceObj.Clear()
-
-			var query bytes.Buffer
-			metricNameFields := namespace.MetricNameCombinedFields
-			var allWMIFields []string = append(metricNameFields, namespace.MetricValueField)
-			query.WriteString("SELECT ")
-			query.WriteString(strings.Join(allWMIFields, ","))
-			query.WriteString(" FROM ")
-			query.WriteString(namespace.Class)
-			if namespace.WhereClause != "" {
-				query.WriteString(" WHERE ")
-				query.WriteString(namespace.WhereClause)
-			}
-			//logp.Info("Query: " + query.String())
-			resultObj, err := oleutil.CallMethod(nsService, "ExecQuery", query.String())
-			if err != nil {
-				bt.log.Error("cannot exec query in current namespace, skipping it: " + query.String())
-				continue
-			}
-			result := resultObj.ToIDispatch()
-			defer resultObj.Clear()
-			countObj, err := oleutil.GetProperty(result, "Count")
-			if err != nil {
-				bt.log.Error("cannot get `Count` property, skipping current namespace.")
-				continue
-			}
-			count := int(countObj.Val)
-			defer countObj.Clear()
-			//logp.Info("count: " + strconv.Itoa(count))
-
-			for i := 0; i < count; i++ {
-				rowObj, err := oleutil.CallMethod(result, "ItemIndex", i)
-				if err != nil {
-					bt.log.Error("cannot fetch ItemIndex, skipping it.")
-					continue
-				}
-				row := rowObj.ToIDispatch()
-				defer rowObj.Clear()
-
-				var objectTitle = namespace.Namespace + "_" + namespace.Class
-				var metricValue = ""
-				var hasError int = 0
-				for _, j := range allWMIFields {
-					wmiObj, err := oleutil.GetProperty(row, j)
+					result := resultObj.ToIDispatch()
+					defer result.Release()
+					countObj, err := oleutil.GetProperty(result, "Count")
+					defer countObj.Clear()
 					if err != nil {
-						bt.log.Error("cannot get `Count` property for row, skipping it.")
-						hasError = 1
-						break
+						bt.log.Error("cannot query count property for class `" + class.Class + "`")
+						continue
 					}
-					var objValue = wmiObj.Value()
-					if j != namespace.MetricValueField {
-						objectTitle = fmt.Sprintf("%s_%v", objectTitle, objValue)
+					count := int(countObj.Val)
+
+					var classValues interface{} = nil
+
+					if class.ObjectTitle != "" {
+						classValues = common.MapStr{}
 					} else {
-						metricValue = fmt.Sprintf("%v", objValue)
+						classValues = []common.MapStr{}
 					}
-					defer wmiObj.Clear()
-				}
-				if hasError == 0 {
-					objectTitle = strings.ReplaceAll(strings.ReplaceAll(objectTitle, " ", ""), "#", "")
-					//logp.Info(objectTitle + " = " + metricValue)
-					allValues = common.MapStrUnion(allValues, common.MapStr{objectTitle: metricValue})
+					for i := 0; i < count; i++ {
+						rowObj, err := oleutil.CallMethod(result, "ItemIndex", i)
+						if err != nil {
+							bt.log.Error("cannot call ItemIndex for class `" + class.Class + "`")
+							continue
+						}
+						row := rowObj.ToIDispatch()
+						defer rowObj.Clear()
+						var rowValues common.MapStr
+						var objectTitle = ""
+						var hasError int = 0
+						for _, j := range wmiFields {
+							wmiObj, err := oleutil.GetProperty(row, j)
+							defer wmiObj.Clear()
+
+							if err != nil {
+								bt.log.Error("cannot get property for class `" + class.Class + "`")
+								hasError = 1
+								break
+							}
+							var objValue = wmiObj.Value()
+							if class.ObjectTitle == j {
+								objectTitle = objValue.(string)
+							}
+							rowValues = common.MapStrUnion(rowValues, common.MapStr{j: objValue})
+
+						}
+						if hasError == 0 {
+							if class.ObjectTitle != "" {
+								if objectTitle != "" {
+									classValues = common.MapStrUnion(classValues.(common.MapStr), common.MapStr{objectTitle: rowValues})
+								} else {
+									classValues = common.MapStrUnion(classValues.(common.MapStr), common.MapStr{strconv.Itoa(i): rowValues})
+								}
+							} else {
+								classValues = append(classValues.([]common.MapStr), rowValues)
+							}
+						}
+						rowValues = nil
+					}
+					allValues = common.MapStrUnion(allValues, common.MapStr{class.Class: classValues})
+					classValues = nil
+
+				} else {
+					var errorString bytes.Buffer
+					errorString.WriteString("No fields defined for class ")
+					errorString.WriteString(class.Class)
+					errorString.WriteString(".  Skipping")
+					bt.log.Warn(errorString.String())
 				}
 			}
-		}
 
-		ole.CoUninitialize()
+			for _, namespace := range bt.config.Namespaces {
+				//bt.log.Info("Namespace: root\\" + namespace.Namespace)
+				func() {
+					nsServiceObj, err := oleutil.CallMethod(wmiqi, "ConnectServer", "localhost",
+						"root\\"+namespace.Namespace)
+					if err != nil {
+						bt.log.Error("cannot connect to namespace `" + namespace.Namespace + "`, skipping it.")
+						return
+					}
+					nsService := nsServiceObj.ToIDispatch()
+					defer nsService.Release()
 
-		event := beat.Event{
-			Timestamp: time.Now(),
-			Fields: common.MapStr{
-				"type": b.Info.Name,
-				//"counter": counter,
-				"wmi": allValues,
-			},
+					var query bytes.Buffer
+					metricNameFields := namespace.MetricNameCombinedFields
+					var allWMIFields []string = append(metricNameFields, namespace.MetricValueField)
+					query.WriteString("SELECT ")
+					query.WriteString(strings.Join(allWMIFields, ","))
+					query.WriteString(" FROM ")
+					query.WriteString(namespace.Class)
+					if namespace.WhereClause != "" {
+						query.WriteString(" WHERE ")
+						query.WriteString(namespace.WhereClause)
+					}
+					resultObj, err := oleutil.CallMethod(nsService, "ExecQuery", query.String())
+					if err != nil {
+						bt.log.Error("cannot exec query in current namespace, skipping it: " + query.String())
+						return
+					}
+					result := resultObj.ToIDispatch()
+					defer result.Release()
+
+					countObj, err := oleutil.GetProperty(result, "Count")
+					if err != nil {
+						bt.log.Error("cannot get `Count` property, skipping current namespace.")
+						return
+					}
+					defer countObj.Clear()
+					count := int(countObj.Val)
+					bt.log.Info("Namespace: root\\" + namespace.Namespace + ", count in class: " + strconv.Itoa(count))
+					for i := 0; i < count; i++ {
+						func() {
+							rowObj, err := oleutil.CallMethod(result, "ItemIndex", i)
+							defer rowObj.Clear()
+							if err != nil {
+								bt.log.Error("cannot fetch ItemIndex, skipping it.")
+								return
+							}
+							row := rowObj.ToIDispatch()
+							var objectTitle = namespace.Namespace + "_" + namespace.Class
+							var metricValue = ""
+							var hasError int = 0
+							for _, j := range allWMIFields {
+								func() {
+									wmiObj, err := oleutil.GetProperty(row, j)
+									defer wmiObj.Clear()
+									if err != nil {
+										bt.log.Error("cannot get `Count` property for row, skipping it.")
+										hasError = 1
+										return
+									}
+									var objValue = wmiObj.Value()
+									if j != namespace.MetricValueField {
+										objectTitle = fmt.Sprintf("%s_%v", objectTitle, objValue)
+									} else {
+										metricValue = fmt.Sprintf("%v", objValue)
+									}
+								}()
+							}
+							if hasError == 0 {
+								objectTitle = strings.ReplaceAll(strings.ReplaceAll(objectTitle, " ", ""), "#", "")
+								allValues = common.MapStrUnion(allValues, common.MapStr{objectTitle: metricValue})
+							}
+						}()
+					}
+				}()
+			}
+
+			ole.CoUninitialize()
+
+			event := beat.Event{
+				Timestamp: time.Now(),
+				Fields: common.MapStr{
+					"type": b.Info.Name,
+					"wmi":  allValues,
+				},
+			}
+			bt.client.Publish(event)
+			allValues = nil
+			return nil
+		}()
+		if err != nil {
+			return err
 		}
-		bt.client.Publish(event)
-		//bt.log.Info("Event sent")
-		//counter++
 	}
 }
 
